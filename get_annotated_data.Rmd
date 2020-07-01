@@ -1,0 +1,324 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#### Setup up and load references 
+
+Load R packages and functions
+```{r load packages}
+library(XML)
+library(dplyr)
+library(RCurl)
+library(stringr)
+library(tidyr)
+source("functions/AutoAnnotator_IntroRefsCut.R")
+```
+
+Load AD data (22,432 references with PDFs) from Endnote XML file once (commented out) - then load from saved CSV file to save time in future
+
+```{r get data}
+
+# xmldat <- xmlParse("AD_IncludedStudies_280319_updated.xml")
+# x <-  getNodeSet(xmldat,'//record')
+
+# xpath2 <-function(x, ...){
+#   y <- xpathSApply(x, ...)
+#  y <- gsub(",", "", y)  # remove commas if using comma separator
+#    ifelse(length(y) == 0, NA,  paste(y, collapse=", "))
+#  }
+# 
+# AD_data <- data.frame(
+#   Author = sapply(x, xpath2, ".//contributors/authors", xmlValue),
+#   AuthAddress = sapply(x, xpath2, ".//auth-address", xmlValue),
+#   Year   = sapply(x, xpath2, ".//dates/year", xmlValue),
+#   Journal = sapply(x, xpath2, ".//periodical/full-title", xmlValue),
+#   DOI = sapply(x, xpath2, ".//electronic-resource-num", xmlValue),
+#   Title = sapply(x, xpath2, ".//titles/title", xmlValue),
+#   Pages = sapply(x, xpath2, ".//pages", xmlValue),
+#   Volume = sapply(x, xpath2, ".//volume", xmlValue),
+#   Number = sapply(x, xpath2, ".//number", xmlValue),
+#   Abstract = sapply(x, xpath2, ".//abstract", xmlValue),
+#   RecordID = sapply(x, xpath2, ".//rec-number", xmlValue),
+#   SecondaryTitle = sapply(x, xpath2, ".//titles/secondary-title", xmlValue),
+#   PdfRelativePath = sapply(x, xpath2, ".//pdf-urls", xmlValue),
+#   Keywords = sapply(x, xpath2, ".//keywords/keyword", xmlValue))
+# 
+# AD_data  <- AD_data  %>%
+#   mutate(Journal=ifelse(is.na(Journal), paste(SecondaryTitle), paste(Journal)))
+
+# write.csv(AD_data, "data/AD_shiny_data_final.csv")
+
+AD_data <- read.csv("data/AD_shiny_data_final.csv")
+
+AD_data_ID <- AD_data %>%
+  select(RecordID)
+
+```
+
+#### Categorise dataset by drug (using regular expression dictionary)
+
+Load drug regex dictionary
+```{r drug regex}
+drug_regex <- read.csv("data/drug_lookuptable_regex_full.csv",
+                       encoding="UTF-8",
+                       header=T, 
+                       col.names = c("Name","Regex","FDA Status", "Company", "TargetType", "TherapyType"))
+```
+
+Run AutoAnnotator function once (takes time) and load results. NOTE: highly dependent on computing power; may be best to split up dataset and run on smaller sections if needed or if you find that the PDF conversion isn't working properly 
+```{r}
+AD_interventions<- CountTermsInStudies(
+  searchingData = AD_data,
+  dictionary = drug_regex,
+  textSearchingHeaders = c("Abstract","Title"),
+  linkSearchHeaders = "PdfRelativePath",
+  dictionaryNameHeader = "Name",
+  dictionaryRegexHeader = "Regex",
+  ignoreCase = FALSE,
+  ignoreExistingTextFile = FALSE,
+  conversionSoftware = "C:/Users/kaitl/OneDrive - University of Edinburgh/AD Project - PhD/LivingSR/Living_AD_Shiny/xpdfbin-win-3.04/bin64/pdftotext.exe")
+```
+
+Get rows of AD data and merge back with AutoAnnotator results to match back the RecordIDs
+```{r}
+AD_data_row <- AD_data %>%
+  select(RecordID) 
+
+AD_data_row<-tibble::rownames_to_column(AD_data_row, "rowname")
+
+AD_intervention <- merge(AD_intervention, AD_data_row, by="rowname")
+
+AD_intervention <- AD_intervention %>%
+  filter(!RecordID %in% AD_intervention_missing$RecordID) %>%
+  select(-rowname)
+```
+
+Remove records where the PDF conversion didn't work and restructure into long format (DrugName, RegexResult) where RegexResults is the frequency of the term found in the Title, Abstract, and Full Text
+
+```{r}
+AD_interventions <- AD_intervention %>%
+  filter(PdfRelativePathStatus == "OK: File is read Successfully") %>%
+  select(-PdfRelativePathStatus) %>%
+  gather("Name", "RegexResult", -RecordID) %>%
+  unique() 
+```
+
+Merge other drug information e.g. FDA status from original drug dictionary. Write files with PDF conversion status and final formatted intervention annotated dataset 
+```{r}
+AD_interventions<-merge(AD_interventions, drug_regex, by="Name")
+
+AD_interventions<-AD_interventions%>%
+  rename(Drug = Name)
+
+write.csv(AD_intervention, "data/AD_Interventions_fullstatus.csv")
+write.csv(AD_interventions, "data/AD_Interventions_180620.csv")
+```
+
+#### Categorise dataset by model (using regular expression dictionary)
+
+Load model regex dictionary
+```{r model regex}
+model_regex <- read.csv("data/TgModelsRegex.csv",
+                        encoding="UTF-8",
+                        header=T,
+                        col.names = c("Name","Regex","Gene Mutations"))
+
+```
+
+Run AutoAnnotator function once (takes time) and load results. NOTE: highly dependent on computing power; may be best to split up dataset and run on smaller sections if needed or if you find that the PDF conversion isn't working properly 
+```{r}
+AD_models <- CountTermsInStudies(
+  searchingData = AD_data,
+  dictionary = model_regex,
+  textSearchingHeaders = c("Title","Abstract"),
+  linkSearchHeaders = "PdfRelativePath",
+  dictionaryNameHeader = "Name",
+  dictionaryRegexHeader = "Regex",
+  ignoreCase = FALSE,
+  ignoreExistingTextFile = FALSE,
+  conversionSoftware = "C:/Users/kaitl/OneDrive - University of Edinburgh/AD Project - PhD/LivingSR/Living_AD_Shiny/xpdfbin-win-3.04/bin64/pdftotext.exe")
+```
+
+Get rows of AD data and merge back with AutoAnnotator results to match back the RecordIDs
+```{r}
+AD_models <-tibble::rownames_to_column(AD_models1) 
+
+AD_models <- merge(AD_models, AD_data_row, by="rowname")
+
+AD_models<-AD_models %>%
+  select(-rowname) %>%
+  unique()
+```
+
+Remove records where the PDF conversion didn't work and restructure into long format (DrugName, RegexResult) where RegexResults is the frequency of the term found in the Title, Abstract, and Full Text
+```{r}
+AD_models <- AD_models %>%
+  pivot_longer(-c(RecordID, PdfRelativePathStatus),
+               names_to = "Name", 
+               values_to = "RegexResult") %>%
+  unique() 
+
+AD_models <- AD_models %>%
+  group_by(RecordID) %>%
+  filter(PdfRelativePathStatus == "OK: File is read Successfully") %>%
+  filter(!RegexResult == "0")
+```
+
+Merge other model information e.g. mutations from original model dictionary. Write files with PDF conversion status and final formatted intervention annotated dataset 
+```{r}
+AD_models<-merge(AD_models, model_regex, by="Name")
+
+AD_models<-AD_models%>%
+  rename(Model = Name)
+
+write.csv(AD_models, "AD_models_fullstatus.csv", fileEncoding = "UTF-8")
+write.csv(AD_models, "data/AD_Models_200620.csv", fileEncoding = "UTF-8")
+```
+
+#### Categorise dataset by rob (using regular expression dictionary)
+
+Load ROB dictionary (most up to date version) and follow steps specified above
+```{r ROB regex}
+library(AutoAnnotation)
+# use default function for this
+
+rob_regex <- read.csv("data/rob_regex_update.csv")
+
+AD_rob <- CountTermsInStudies(
+  searchingData = AD_data,
+  dictionary = rob_regex,
+  textSearchingHeaders = "",
+  linkSearchHeaders = "PdfRelativePath",
+  dictionaryNameHeader = "dictionaryNameHeader",
+  dictionaryRegexHeader = "dictionaryRegexHeader",
+  ignoreCase = FALSE,
+  ignoreExistingTextFile = FALSE,
+  conversionSoftware = "C:/Users/kaitl/OneDrive - University of Edinburgh/AD Project - PhD/LivingSR/Living_AD_Shiny/xpdfbin-win-3.04/bin64/pdftotext.exe")
+
+
+AD_rob <-tibble::rownames_to_column(AD_rob)
+
+AD_data_row <- AD_data %>%
+  select(RecordID, Year) 
+
+AD_data_row<-tibble::rownames_to_column(AD_data_row)
+
+AD_rob <- merge(AD_rob, AD_data_row, by="rowname")
+
+AD_rob <- AD_rob %>%
+  select(-X, -rowname, -Year)
+
+write.csv(AD_rob, "AD_rob_fullstatus.csv")
+
+AD_rob <- AD_rob %>%
+  select(-X,-rowname, -CAW) %>%
+  pivot_longer(-c(RecordID, Year, PdfRelativePathStatus),
+               names_to = "Regex", 
+               values_to = "RegexResult") %>%
+  unique() 
+
+AD_rob <- AD_rob %>%
+  group_by(RecordID) %>%
+  filter(PdfRelativePathStatus == "OK: File is read Successfully") %>%
+  select(RecordID, Regex, RegexResult) %>%
+  unique()
+
+write.csv(AD_rob, "data/AD_rob_120220.csv")
+
+```
+
+#### Categorise dataset by rob (using regular expression dictionary)
+
+Load Outcomes dictionary and follow steps specified above
+```{r}
+outcome_regex <- read.csv("data/outcome_regex.csv", encoding="UTF-8", header=T, col.names = c("Category", "dictionaryNameHeader", "dictionaryRegexHeader"))
+
+AD_outcomes <- CountTermsInStudies(
+  searchingData = AD_data,
+  dictionary = outcome_regex,
+  textSearchingHeaders = c("Title","Abstract"),
+  linkSearchHeaders = "PdfRelativePath",
+  dictionaryNameHeader = "dictionaryNameHeader",
+  dictionaryRegexHeader = "dictionaryRegexHeader",
+  ignoreCase = FALSE,
+  ignoreExistingTextFile = FALSE,
+  conversionSoftware = "C:/Users/kaitl/OneDrive - University of Edinburgh/AD Project - PhD/LivingSR/Living_AD_Shiny/xpdfbin-win-3.04/bin64/pdftotext.exe")
+
+AD_data_row <- AD_data %>%
+  select(RecordID) 
+
+AD_data_row<-tibble::rownames_to_column(AD_data_row, "rowname")
+AD_outcome<-tibble::rownames_to_column(AD_outcome, "rowname")
+
+AD_outcome <- merge(AD_outcome, AD_data_row, by="rowname")
+
+AD_outcome <- AD_outcome %>%
+  filter(PdfRelativePathStatus == "OK: File is read Successfully") %>%
+  select(-PdfRelativePathStatus, -rowname) %>%
+  gather("dictionaryNameHeader", "RegexResult", -RecordID) %>%
+  unique() %>%
+  filter(!RegexResult == "0")
+
+AD_outcomes<-merge(AD_outcome, outcome_regex, by="dictionaryNameHeader")
+
+AD_outcomes <- AD_outcomes %>%
+  rename(Outcome = dictionaryNameHeader)
+
+write.csv(AD_outcomes, "data/AD_Outcomes_050220")
+
+```
+
+#### Get country data from AuthorAddress
+```{r drug inteventions data}
+countries_regex <- read.csv("data/countries_regex.csv", encoding="UTF-8", stringsAsFactors=FALSE)
+uni_regex <- read.csv("data/uni_regex.csv", encoding="UTF-8", stringsAsFactors=FALSE, header=T)
+
+d <- NULL
+
+for(i in unique(countries_regex$X.U.FEFF.Country)){
+  
+  AD_data_country <- AD_data %>%
+    mutate(CountryMatch = grepl(i, AuthAddress)) %>%
+    mutate(Country = paste(i)) %>%
+    filter(CountryMatch == "TRUE")
+  
+  d <- rbind(d, AD_data_country)
+  AD_data_country_full <- d
+  
+}
+
+AD_data_country_full <- AD_data_country_full %>%
+  select(RecordID, Country) %>%
+  unique()
+
+write.csv(AD_data_country_full, "AD_data_country_full.csv")
+
+
+d <- NULL
+
+for(i in unique(uni_regex$University)){
+  
+  AD_data_uni <- AD_data %>%
+    mutate(UniMatch = grepl(i, AuthAddress)) %>%
+    mutate(Uni = paste(i)) %>%
+    filter(UniMatch == "TRUE")
+  
+  d <- rbind(d, AD_data_uni)
+  AD_data_uni_full <- d
+  
+}
+
+#final df
+write.csv(AD_data_uni, "UniversitiesFullData_150819.csv")
+write.csv(AD_data_country, "CoutnryFullData_150819.csv")
+
+```
+
+
+
+
+
+
+
+
